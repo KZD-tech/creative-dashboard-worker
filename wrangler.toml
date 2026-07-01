@@ -1,0 +1,19 @@
+name = "rumah-padi-api"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+
+# Cron: sync FB Ads setiap 6 jam
+[triggers]
+crons = ["0 */6 * * *"]
+
+# D1 Database binding
+[[d1_databases]]
+binding     = "DB"
+database_name = "rumah-padi-db"
+database_id = "GANTI_DENGAN_ID_SELEPAS_BUAT_D1"
+
+# Environment variables (letak dalam Cloudflare Dashboard > Worker > Settings > Variables)
+# Jangan letak token sebenar kat sini!
+# ONPAY_WEBHOOK_TOKEN = dari Tetapan > Sistem > API & Webhook
+# FB_ACCESS_TOKEN     = Facebook System User Token (lihat SETUP.md)
+# ALLOWED_ORIGIN      = URL dashboard Pages anda (contoh: https://rumah-padi.pages.dev)
