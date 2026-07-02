@@ -131,8 +131,10 @@ async function uploadFB(request, env, c) {
     const campaign   = row['Campaign name'] || '';
     const adset      = row['Ad set name']   || '';
 
+    // Incremental (mingguan): tambah angka baru ke atas yang sedia ada
+    // Rate metrics dikira semula dari totals terkumpul
     await env.DB.prepare(`
-      INSERT OR REPLACE INTO fb_ads
+      INSERT INTO fb_ads
         (campaign_id, ad_name, campaign_name, adset_name,
          spend, impressions, reach, ctr,
          purchases, cost_per_result, purchase_roas,
@@ -140,6 +142,43 @@ async function uploadFB(request, env, c) {
          cpc, link_clicks, frequency, cpm,
          date_start, date_stop, uploaded_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT (campaign_id, ad_name) DO UPDATE SET
+        campaign_name   = excluded.campaign_name,
+        adset_name      = excluded.adset_name,
+        spend           = spend + excluded.spend,
+        impressions     = impressions + excluded.impressions,
+        reach           = reach + excluded.reach,
+        purchases       = purchases + excluded.purchases,
+        lpv             = lpv + excluded.lpv,
+        link_clicks     = link_clicks + excluded.link_clicks,
+        -- Kira semula rates dari totals baru
+        ctr             = CASE WHEN (impressions + excluded.impressions) > 0
+                            THEN (link_clicks + excluded.link_clicks) * 100.0 / (impressions + excluded.impressions)
+                            ELSE 0 END,
+        cpm             = CASE WHEN (impressions + excluded.impressions) > 0
+                            THEN (spend + excluded.spend) * 1000.0 / (impressions + excluded.impressions)
+                            ELSE 0 END,
+        cpc             = CASE WHEN (link_clicks + excluded.link_clicks) > 0
+                            THEN (spend + excluded.spend) / (link_clicks + excluded.link_clicks)
+                            ELSE 0 END,
+        cost_per_lpv    = CASE WHEN (lpv + excluded.lpv) > 0
+                            THEN (spend + excluded.spend) / (lpv + excluded.lpv)
+                            ELSE 0 END,
+        cost_per_result = CASE WHEN (purchases + excluded.purchases) > 0
+                            THEN (spend + excluded.spend) / (purchases + excluded.purchases)
+                            ELSE 0 END,
+        frequency       = CASE WHEN (reach + excluded.reach) > 0
+                            THEN (impressions + excluded.impressions) * 1.0 / (reach + excluded.reach)
+                            ELSE 0 END,
+        -- Hook rate: weighted average ikut impressions
+        hook_rate       = CASE WHEN (impressions + excluded.impressions) > 0
+                            THEN (hook_rate * impressions + excluded.hook_rate * excluded.impressions)
+                                 / (impressions + excluded.impressions)
+                            ELSE 0 END,
+        purchase_roas   = excluded.purchase_roas,
+        date_start      = CASE WHEN date_start < excluded.date_start THEN date_start ELSE excluded.date_start END,
+        date_stop       = excluded.date_stop,
+        uploaded_at     = datetime('now')
     `).bind(
       campaignId, adName, campaign, adset,
       spend, impr, reach, ctr,
