@@ -58,6 +58,9 @@ export default {
       if (pathname === '/api/donations' && request.method === 'GET')
         return await getDonations(request, env, c);
 
+      if (pathname === '/api/logs' && request.method === 'GET')
+        return await getLogs(request, env, c);
+
       if (pathname === '/webhook/onpay' && request.method === 'POST')
         return await handleOnpayWebhook(request, env, c);
 
@@ -191,6 +194,12 @@ async function uploadFB(request, env, c) {
     upserted++;
   }
 
+  // Log upload
+  const totalSpend = rows.reduce((s, r) => s + parseFloat(r['Amount spent (MYR)'] || r['spend'] || 0), 0);
+  const dateRange  = rows.length ? `${rows[0]['Reporting starts'] || ''} → ${rows[rows.length-1]['Reporting ends'] || ''}` : '';
+  await writeLog(env, 'fb', campaignId, 'ok',
+    `${upserted} iklan | ${dateRange} | RM${totalSpend.toFixed(2)} belanja`);
+
   return jsonResp({ ok: true, upserted, source: 'fb', campaign_id: campaignId }, 200, c);
 }
 
@@ -240,6 +249,10 @@ async function uploadOnpay(request, env, c) {
     upserted++;
   }
 
+  const totalAmount = rows.reduce((s, r) => s + parseFloat(r['Jumlah Keseluruhan (RM)'] || 0), 0);
+  await writeLog(env, 'onpay', campaignId, 'ok',
+    `${upserted} derma | RM${totalAmount.toFixed(2)} jumlah`);
+
   return jsonResp({ ok: true, upserted, source: 'onpay', campaign_id: campaignId }, 200, c);
 }
 
@@ -267,6 +280,8 @@ async function uploadVideos(request, env, c) {
 
     upserted++;
   }
+
+  await writeLog(env, 'videos', campaignId, 'ok', `${upserted} video links dikemas kini`);
 
   return jsonResp({ ok: true, upserted, source: 'videos', campaign_id: campaignId }, 200, c);
 }
@@ -392,6 +407,30 @@ async function handleOnpayWebhook(request, env, c) {
   ).run();
 
   return jsonResp({ ok: true }, 200, c);
+}
+
+// ─── WRITE LOG ────────────────────────────────────────────────────────────────
+async function writeLog(env, type, campaignId, status, message) {
+  await env.DB.prepare(`
+    INSERT INTO sync_log (type, status, message, created_at)
+    VALUES (?, ?, ?, datetime('now'))
+  `).bind(`${type}:${campaignId}`, status, message).run();
+}
+
+// ─── GET LOGS ─────────────────────────────────────────────────────────────────
+async function getLogs(request, env, c) {
+  const { searchParams } = new URL(request.url);
+  const campaignId = searchParams.get('campaign_id') || 'rumah-padi';
+  const limit      = Math.min(parseInt(searchParams.get('limit') || '20'), 100);
+
+  const result = await env.DB.prepare(`
+    SELECT * FROM sync_log
+    WHERE type LIKE ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).bind(`%:${campaignId}`, limit).all();
+
+  return jsonResp({ ok: true, logs: result.results }, 200, c);
 }
 
 // ─── CSV PARSER ───────────────────────────────────────────────────────────────
