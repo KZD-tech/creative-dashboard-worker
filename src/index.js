@@ -254,6 +254,37 @@ async function uploadOnpay(request, env, c) {
   const rows = parseCSV(text);
   if (!rows.length) return jsonResp({ ok: false, error: 'CSV kosong' }, 400, c);
 
+  // Snapshot donations semasa sebelum upload
+  const onpaySnapId  = Date.now().toString();
+  const existingDon  = await env.DB.prepare(
+    'SELECT * FROM donations WHERE campaign_id = ?'
+  ).bind(campaignId).all();
+
+  for (const row of existingDon.results) {
+    await env.DB.prepare(`
+      INSERT INTO donations_snapshots
+        (snapshot_id, campaign_id, don_id, uid, donor_name, donor_email,
+         amount, source, campaign_name, adset_name, ad_name,
+         is_new, status, created_at, raw_extra_2, raw_extra_3)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      onpaySnapId, campaignId, row.id, row.uid, row.donor_name, row.donor_email,
+      row.amount, row.source, row.campaign_name, row.adset_name, row.ad_name,
+      row.is_new, row.status, row.created_at, row.raw_extra_2, row.raw_extra_3
+    ).run();
+  }
+
+  // Buang snapshot lama — simpan 5 terkini
+  const oldDonSnaps = await env.DB.prepare(`
+    SELECT DISTINCT snapshot_id FROM donations_snapshots
+    WHERE campaign_id = ? ORDER BY snapped_at DESC LIMIT -1 OFFSET 5
+  `).bind(campaignId).all();
+  for (const s of oldDonSnaps.results) {
+    await env.DB.prepare(
+      'DELETE FROM donations_snapshots WHERE snapshot_id = ?'
+    ).bind(s.snapshot_id).run();
+  }
+
   let upserted = 0;
   for (const row of rows) {
     const id = row['#'];
@@ -291,7 +322,7 @@ async function uploadOnpay(request, env, c) {
 
   const totalAmount = rows.reduce((s, r) => s + parseFloat(r['Jumlah Keseluruhan (RM)'] || 0), 0);
   await writeLog(env, 'onpay', campaignId, 'ok',
-    `${upserted} derma | RM${totalAmount.toFixed(2)} jumlah`);
+    `${upserted} derma | RM${totalAmount.toFixed(2)} jumlah | snap:${onpaySnapId}`);
 
   return jsonResp({ ok: true, upserted, source: 'onpay', campaign_id: campaignId }, 200, c);
 }
@@ -454,24 +485,67 @@ async function getSnapshots(request, env, c) {
   const { searchParams } = new URL(request.url);
   const campaignId = searchParams.get('campaign_id') || 'rumah-padi';
 
-  const result = await env.DB.prepare(`
-    SELECT snapshot_id, campaign_id, MIN(created_at) AS created_at, COUNT(*) AS ad_count
-    FROM fb_ads_snapshots
-    WHERE campaign_id = ?
-    GROUP BY snapshot_id
-    ORDER BY created_at DESC
-    LIMIT 5
+  const fbSnaps = await env.DB.prepare(`
+    SELECT snapshot_id, MIN(created_at) AS created_at, COUNT(*) AS row_count
+    FROM fb_ads_snapshots WHERE campaign_id = ?
+    GROUP BY snapshot_id ORDER BY created_at DESC LIMIT 5
   `).bind(campaignId).all();
 
-  return jsonResp({ ok: true, snapshots: result.results }, 200, c);
+  const donSnaps = await env.DB.prepare(`
+    SELECT snapshot_id, MIN(snapped_at) AS created_at, COUNT(*) AS row_count
+    FROM donations_snapshots WHERE campaign_id = ?
+    GROUP BY snapshot_id ORDER BY snapped_at DESC LIMIT 5
+  `).bind(campaignId).all();
+
+  return jsonResp({
+    ok: true,
+    fb:    fbSnaps.results,
+    onpay: donSnaps.results,
+  }, 200, c);
 }
 
-// ─── ROLLBACK FB ──────────────────────────────────────────────────────────────
+// ─── ROLLBACK ─────────────────────────────────────────────────────────────────
 async function rollbackFB(request, env, c) {
-  const { snapshot_id, campaign_id } = await request.json();
+  const { snapshot_id, campaign_id, type } = await request.json();
   if (!snapshot_id || !campaign_id)
     return jsonResp({ ok: false, error: 'snapshot_id dan campaign_id diperlukan' }, 400, c);
 
+  const snapTime = new Date(parseInt(snapshot_id)).toLocaleString('ms-MY');
+
+  if (type === 'onpay') {
+    // Rollback Onpay donations
+    const snap = await env.DB.prepare(
+      'SELECT * FROM donations_snapshots WHERE snapshot_id = ? AND campaign_id = ?'
+    ).bind(snapshot_id, campaign_id).all();
+
+    if (!snap.results.length)
+      return jsonResp({ ok: false, error: 'Snapshot tidak dijumpai' }, 404, c);
+
+    await env.DB.prepare('DELETE FROM donations WHERE campaign_id = ?').bind(campaign_id).run();
+
+    for (const row of snap.results) {
+      await env.DB.prepare(`
+        INSERT INTO donations
+          (id, uid, donor_name, donor_email, amount, source,
+           campaign_id, campaign_name, adset_name, ad_name,
+           is_new, status, created_at, raw_extra_2, raw_extra_3)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        row.don_id, row.uid, row.donor_name, row.donor_email,
+        row.amount, row.source, campaign_id,
+        row.campaign_name, row.adset_name, row.ad_name,
+        row.is_new, row.status, row.created_at,
+        row.raw_extra_2, row.raw_extra_3
+      ).run();
+    }
+
+    await writeLog(env, 'rollback', campaign_id, 'ok',
+      `↩ Onpay rollback ke ${snapTime} | ${snap.results.length} derma dipulihkan`);
+
+    return jsonResp({ ok: true, restored: snap.results.length }, 200, c);
+  }
+
+  // Rollback FB Ads (default)
   const snap = await env.DB.prepare(
     'SELECT * FROM fb_ads_snapshots WHERE snapshot_id = ? AND campaign_id = ?'
   ).bind(snapshot_id, campaign_id).all();
@@ -479,10 +553,8 @@ async function rollbackFB(request, env, c) {
   if (!snap.results.length)
     return jsonResp({ ok: false, error: 'Snapshot tidak dijumpai' }, 404, c);
 
-  // Padam data semasa
   await env.DB.prepare('DELETE FROM fb_ads WHERE campaign_id = ?').bind(campaign_id).run();
 
-  // Restore dari snapshot
   for (const row of snap.results) {
     await env.DB.prepare(`
       INSERT INTO fb_ads
@@ -501,7 +573,7 @@ async function rollbackFB(request, env, c) {
   }
 
   await writeLog(env, 'rollback', campaign_id, 'ok',
-    `↩ Rollback ke snapshot ${new Date(parseInt(snapshot_id)).toLocaleString('ms-MY')} | ${snap.results.length} iklan dipulihkan`);
+    `↩ FB Ads rollback ke ${snapTime} | ${snap.results.length} iklan dipulihkan`);
 
   return jsonResp({ ok: true, restored: snap.results.length }, 200, c);
 }
