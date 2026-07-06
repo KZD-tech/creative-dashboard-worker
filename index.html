@@ -21,7 +21,26 @@
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.5; padding: 24px; }
 
   /* Upload bar */
-  .upload-bar { display: flex; gap: 10px; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  .upload-bar { display: flex; gap: 10px; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 10px 10px 0 0; padding: 12px 16px; flex-wrap: wrap; }
+
+  /* Upload log */
+  .upload-log { background: var(--surface); border: 1px solid var(--border); border-top: none; border-radius: 0 0 10px 10px; padding: 0 16px; margin-bottom: 20px; overflow: hidden; max-height: 0; transition: max-height .25s ease, padding .25s ease; }
+  .upload-log.open { max-height: 300px; padding: 10px 16px; }
+  .log-toggle { font-size: 10px; color: var(--muted); cursor: pointer; margin-left: auto; white-space: nowrap; user-select: none; }
+  .log-toggle:hover { color: var(--text); }
+  .log-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .log-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 3px 6px; border-bottom: 1px solid var(--border); }
+  .log-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); color: var(--text); }
+  .log-table tr:last-child td { border-bottom: none; }
+  .log-type-fb       { color: #185FA5; font-weight: 600; }
+  .log-type-onpay    { color: #0F6E56; font-weight: 600; }
+  .log-type-videos   { color: #A32D2D; font-weight: 600; }
+  .log-type-rollback { color: #eda100; font-weight: 600; }
+  .btn-rollback { font-size: 10px; padding: 2px 8px; border-radius: 10px; border: 1px solid #e24b4a; color: #e24b4a; background: none; cursor: pointer; white-space: nowrap; }
+  .btn-rollback:hover { background: #FCEBEB; }
+  .log-tabs { display: flex; gap: 12px; margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .log-tab { font-size: 11px; font-weight: 500; color: var(--muted); cursor: pointer; padding-bottom: 2px; }
+  .log-tab.active { color: var(--text); border-bottom: 2px solid var(--text); }
   .upload-label { font-size: 12px; font-weight: 500; color: var(--muted); white-space: nowrap; }
   .upload-zone { display: flex; flex-direction: column; gap: 4px; }
   .upload-zone-row { display: flex; align-items: center; gap: 8px; }
@@ -93,6 +112,12 @@
   .video-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: #555; }
   .video-placeholder svg { opacity: .3; }
   .video-placeholder span { font-size: 11px; opacity: .5; }
+  /* YouTube lazy embed */
+  .yt-thumb { position: absolute; inset: 0; cursor: pointer; overflow: hidden; }
+  .yt-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .yt-play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.25); transition: background .15s; }
+  .yt-thumb:hover .yt-play { background: rgba(0,0,0,.1); }
+  .yt-play svg { filter: drop-shadow(0 2px 6px rgba(0,0,0,.5)); }
 
   /* Badge overlay */
   .badge-overlay { position: absolute; top: 8px; left: 8px; }
@@ -207,6 +232,27 @@
     </div>
     <span class="tmpl-link" onclick="downloadTemplate('videos')">↓ download template</span>
   </div>
+  <span class="log-toggle" onclick="toggleLog()">📋 Log Upload</span>
+</div>
+
+<div class="upload-log" id="upload-log">
+  <div class="log-tabs">
+    <span class="log-tab active" onclick="switchLogTab('log')">Log Upload</span>
+    <span class="log-tab" onclick="switchLogTab('rollback')">↩ Rollback</span>
+  </div>
+  <div id="log-panel-log">
+    <table class="log-table">
+      <thead><tr><th>Masa</th><th>Jenis</th><th>Butiran</th></tr></thead>
+      <tbody id="log-tbody"><tr><td colspan="3" style="color:var(--muted);text-align:center">Tiada log lagi</td></tr></tbody>
+    </table>
+  </div>
+  <div id="log-panel-rollback" style="display:none">
+    <table class="log-table">
+      <thead><tr><th>Snapshot</th><th>Bilangan Iklan</th><th></th></tr></thead>
+      <tbody id="snap-tbody"><tr><td colspan="3" style="color:var(--muted);text-align:center">Tiada snapshot</td></tr></tbody>
+    </table>
+    <div style="font-size:10px;color:var(--muted);margin-top:8px">Simpan 5 snapshot terkini. Setiap upload FB Ads buat snapshot automatik.</div>
+  </div>
 </div>
 
 <div class="summary" style="grid-template-columns:repeat(7,1fr)">
@@ -317,13 +363,17 @@ function makeAdCard(ad) {
 
   const ytId = getYouTubeId(ad.youtube_url);
   const videoHTML = ytId
-    ? `<iframe
-         src="https://www.youtube.com/embed/${ytId}?rel=0&modestbranding=1"
-         frameborder="0"
-         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-         allowfullscreen
-         style="position:absolute;inset:0;width:100%;height:100%;border:0">
-       </iframe>`
+    ? `<div class="yt-thumb" onclick="playYT(this,'${ytId}')">
+         <img src="https://img.youtube.com/vi/${ytId}/mqdefault.jpg"
+              onerror="this.src='https://img.youtube.com/vi/${ytId}/hqdefault.jpg'"
+              alt="thumbnail" loading="lazy">
+         <div class="yt-play">
+           <svg width="56" height="56" viewBox="0 0 68 48" fill="none">
+             <rect width="68" height="48" rx="10" fill="#FF0000"/>
+             <polygon points="27,14 27,34 46,24" fill="white"/>
+           </svg>
+         </div>
+       </div>`
     : ad.file
       ? `<video controls preload="metadata" playsinline>
            <source src="${encode(ad.file)}">
@@ -511,6 +561,98 @@ async function loadLiveData() {
   }
 }
 
+// Upload Log
+let logOpen   = false;
+let activeTab = 'log';
+
+async function toggleLog() {
+  logOpen = !logOpen;
+  document.getElementById('upload-log').classList.toggle('open', logOpen);
+  if (logOpen) await loadLog();
+}
+
+function switchLogTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.log-tab').forEach((t, i) => {
+    t.classList.toggle('active', (i === 0 && tab === 'log') || (i === 1 && tab === 'rollback'));
+  });
+  document.getElementById('log-panel-log').style.display      = tab === 'log'      ? '' : 'none';
+  document.getElementById('log-panel-rollback').style.display = tab === 'rollback' ? '' : 'none';
+  if (tab === 'rollback') loadSnapshots();
+}
+
+async function loadLog() {
+  try {
+    const res  = await fetch(`${WORKER_URL}/api/logs?campaign_id=${currentCampaignId}&limit=20`);
+    const data = await res.json();
+    if (!data.ok || !data.logs.length) return;
+
+    const typeLabel = { fb:'FB Ads', onpay:'Onpay', videos:'Video Links', rollback:'Rollback' };
+    const typeClass = { fb:'log-type-fb', onpay:'log-type-onpay', videos:'log-type-videos', rollback:'log-type-rollback' };
+
+    document.getElementById('log-tbody').innerHTML = data.logs.map(l => {
+      const rawType = (l.type || '').split(':')[0];
+      const masa    = new Date(l.created_at + 'Z').toLocaleString('ms-MY', { dateStyle:'short', timeStyle:'short' });
+      // Sembunyi snap:xxx dari paparan
+      const msg = (l.message || '').replace(/\s*\|\s*snap:\d+/, '');
+      return `<tr>
+        <td style="white-space:nowrap;color:var(--muted)">${masa}</td>
+        <td class="${typeClass[rawType] || ''}">${typeLabel[rawType] || rawType}</td>
+        <td>${msg}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('log-tbody').innerHTML =
+      '<tr><td colspan="3" style="color:var(--muted)">Gagal muatkan log</td></tr>';
+  }
+}
+
+async function loadSnapshots() {
+  try {
+    const res  = await fetch(`${WORKER_URL}/api/snapshots?campaign_id=${currentCampaignId}`);
+    const data = await res.json();
+    if (!data.ok) return;
+
+    const makeRows = (snaps, type, label) => snaps.length
+      ? snaps.map(s => {
+          const masa = new Date(s.created_at + 'Z').toLocaleString('ms-MY', { dateStyle:'short', timeStyle:'short' });
+          return `<tr>
+            <td style="color:var(--muted);white-space:nowrap">${masa}</td>
+            <td>${label} · ${s.row_count} rekod</td>
+            <td><button class="btn-rollback" onclick="doRollback('${s.snapshot_id}','${type}')">↩ Rollback</button></td>
+          </tr>`;
+        }).join('')
+      : `<tr><td colspan="3" style="color:var(--muted)">Tiada snapshot ${label}</td></tr>`;
+
+    document.getElementById('snap-tbody').innerHTML =
+      makeRows(data.fb || [], 'fb', 'FB Ads') +
+      makeRows(data.onpay || [], 'onpay', 'Onpay');
+  } catch(e) {
+    document.getElementById('snap-tbody').innerHTML =
+      '<tr><td colspan="3" style="color:var(--muted)">Gagal muatkan snapshot</td></tr>';
+  }
+}
+
+async function doRollback(snapshotId, type) {
+  const label = type === 'onpay' ? 'Onpay (donations)' : 'FB Ads';
+  if (!confirm(`Rollback ${label} akan gantikan data semasa dengan snapshot ini. Teruskan?`)) return;
+  try {
+    const res  = await fetch(`${WORKER_URL}/api/rollback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshot_id: snapshotId, campaign_id: currentCampaignId, type }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    alert(`✓ Berjaya pulihkan ${data.restored} rekod`);
+    await loadLiveData();
+    await loadLog();
+    switchLogTab('log');
+  } catch(e) {
+    alert('Gagal rollback: ' + e.message);
+  }
+}
+
 // Template Download
 function downloadTemplate(type) {
   const templates = {
@@ -569,7 +711,8 @@ async function uploadCSV(type, input) {
     if (!data.ok) throw new Error(data.error);
     statusEl.className = 'upload-status ok';
     statusEl.textContent = `✓ ${data.upserted} rekod berjaya`;
-    await loadLiveData(); // refresh dashboard
+    await loadLiveData();
+    if (logOpen) await loadLog(); // refresh log kalau terbuka
   } catch (e) {
     statusEl.className = 'upload-status err';
     statusEl.textContent = '✗ ' + e.message;
@@ -658,6 +801,17 @@ async function submitNewCampaign() {
     btn.disabled = false;
     btn.textContent = 'Buat Kempen';
   }
+}
+
+// YouTube lazy play — replace thumbnail dengan iframe bila diklik
+function playYT(el, ytId) {
+  const iframe = document.createElement('iframe');
+  iframe.src = `https://www.youtube.com/embed/${ytId}?autoplay=1&rel=0&modestbranding=1`;
+  iframe.frameBorder = '0';
+  iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
+  iframe.allowFullscreen = true;
+  iframe.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0';
+  el.replaceWith(iframe);
 }
 
 // Init
