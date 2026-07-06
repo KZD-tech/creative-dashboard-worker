@@ -1,5 +1,5 @@
 /**
- * Creative Dashboard — Cloudflare Worker (Multi-Kempen)
+ * Rumah Padi Dashboard — Cloudflare Worker (Multi-Kempen)
  *
  * Routes:
  *   GET  /api/campaigns         → senarai kempen
@@ -605,7 +605,7 @@ async function getLogs(request, env, c) {
 // ─── CSV PARSER ───────────────────────────────────────────────────────────────
 function parseCSV(text) {
   const clean = text.replace(/^﻿/, '');
-  const lines = clean.split(/\r?\n/);
+  const lines = clean.split(/\r\n|\n|\r/); // handle CR-only, LF, CRLF
   const headers = parseCSVLine(lines[0]);
   return lines.slice(1)
     .map(line => {
